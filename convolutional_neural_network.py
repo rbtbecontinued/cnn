@@ -7,6 +7,7 @@ Created on Fri Jan 12 20:30:39 2018
 """
 
 import numpy as np
+import matplotlib.pyplot as plt
 from cnn_operations import cnn_operations as cnn_opr
 
 
@@ -23,7 +24,7 @@ class cnn():
         # array，网络的输出
         self.output = None
         # 网络的代价
-        self.loss = np.Inf
+        self.loss = None
         # 权值的学习率
         self.learning_rate_weight = 0.1
         # 偏置的学习率
@@ -67,7 +68,9 @@ class cnn():
         
         Parameters
         ----------
-        x: 2-d或3-d array，输入样本（图像）
+        x: 3-d array，一个batch的输入图像，
+                每个通道的尺寸为x.shape[0] * x.shape[1]，
+                x.shape[2]为当前batch中图像的个数 * 每幅图像的通道数
         """
         
         # 输入层前向传播
@@ -76,8 +79,10 @@ class cnn():
         for i in range(1, self.n_layers):
             self.layers[i].feed_forward(x)
             
-        # array，网络的输出
-        self.output = np.ndarray.flatten(np.array(self.layers[-1].output))
+        # self.layers[-1].n_nodes * size_batch array，网络的输出
+        self.output = np.ndarray.flatten( \
+                np.array(self.layers[-1].output)).reshape( \
+                self.layers[-1].n_nodes, -1)
         
         return None
     
@@ -100,47 +105,85 @@ class cnn():
         return None
     
     
-    def fit(self, X, Y, max_iter=100):
+    def fit(self, X, Y, size_batch=1, n_epochs=1):
         """
         训练。
         下降方式为随机梯度下降。
         
         Parameters
         ----------
-        X: list，训练集，X[i]为2-d或3-d array，即一个训练样本（图片）
+        X: 3-d array，训练集，
+                X[:, :, i: i + self.layers[0].n_nodes]为一个训练样本（图片），
+                self.layers[0].n_nodes即为每幅图片的通道数
         
-        Y: list，训练集对应的类别标签
+        Y: array，训练集对应的类别标签
         
-        max_iter: 迭代次数
+        size_batch: 一个batch中训练样本的个数
+        
+        n_epochs: 迭代次数
         """
         
-        if len(X) < max_iter:
-            max_iter = len(X)
-            
-        # 随机选取训练样本
-        index_selected = \
-                np.random.permutation(np.arange(0, len(X)))[ : max_iter]
+        self.size_batch = size_batch
+        # 训练样本个数 * 每幅图片的通道数
+        len_X = X.shape[-1]
+        len_Y = Y.shape[0]
+        # 每个epoch中batch的个数
+        n_batches = int(np.ceil(len_X / self.layers[0].n_nodes / size_batch))
+        
+        loss = np.empty(n_epochs * n_batches)
+        
+        for i_epoch in range(n_epochs):
+            print("Epoch: ", end="")
+            print(i_epoch)
+            for i_batch in range(n_batches):
+                print("\tBatch: ", end="")
+                print(i_batch, end="\t")
+                y_offset = i_batch * size_batch
+                x_offset = y_offset * self.layers[0].n_nodes
                 
-        for i in range(max_iter):
-            # 将类别标签转换为向量
-            y = np.zeros(self.layers[-1].n_nodes)
-            y[Y[index_selected[i]]] = 1
-            
-            self._feed_forward(X[index_selected[i]])
-            self._back_propagate(y)
+                # 将类别标签转换为向量
+                y = np.zeros([self.layers[-1].n_nodes, size_batch])
+                for i in range(size_batch):
+                    if i > len_Y - y_offset - 1:
+                        y = y[:, :, : i]
+                        
+                        break
+                    
+                    y[Y[y_offset + i], i] = 1
+                    
+                self._feed_forward(X[:, :, x_offset: x_offset + size_batch * \
+                                     self.layers[0].n_nodes])
+                
+                loss[i_epoch * n_batches + i_batch] = \
+                        cnn_opr.calc_loss(y.T, self.output.T)
+                print("loss = ", end="")
+                print(loss[i_epoch * n_batches + i_batch])
+                
+                self._back_propagate(y)
+                
+        self.loss = loss
+                
+        plt.figure()
+        plt.plot(loss, "r-")
+        plt.xlabel("Batches")
+        plt.ylabel("Loss")
+        plt.grid()
+        plt.show()
         
         return None
     
     
-    def text(self, X, Y):
+    def test(self, X, Y):
         """
         验证。
         
         Parameters
         ----------
-        X: list，验证集，X[i]为2-d或3-d array，即一个验证样本（图片）
+        X: 3-d array，验证集，
+                X[:, :, i: i + self.layers[0].n_nodes]为一个验证样本（图片），
+                self.layers[0].n_nodes即为每幅图片的通道数
         
-        Y: list，验证集对应的类别标签
+        Y: array，训练集对应的类别标签
         
         Returns
         -------
@@ -148,13 +191,15 @@ class cnn():
         """
         
         n_correct = 0
-        for i in range(len(X)):
-            y_predict = self.predict(X[i])
+        for i in range(0, X.shape[-1], self.layers[0].n_nodes):
+            print("Test case: ", end="")
+            print(i)
+            y_predict = self.predict(X[:, :, i: i + self.layers[0].n_nodes])
             
             if y_predict == Y[i]:
                 n_correct += 1
                 
-        correct_rate = n_correct / len(X)
+        correct_rate = n_correct / X.shape[-1]
         
         return correct_rate
     
@@ -172,11 +217,11 @@ class cnn():
         y_predict: 预测出的输入样本（图像）的类别
         """
         
-        self._feed_forward(x)
+        self._feed_forward(x.reshape(x.shape[0], x.shape[1], -1))
         
         # 根据网络输出层的类型，判定输入图像的类别
         if self.layers[-1].type_output is "softmax":
-            y_predict = np.argmax(self.output)
+            y_predict = np.argmax(self.output[:, 0])
             
         elif self.layers[-1].type_output is "rbf":
             # TODO: 
@@ -211,9 +256,9 @@ class cnn_layer():
         # list，当前层的输出
         self.output = []
         # 权值的学习率
-        self.learning_rate_weight = 0
+        self.learning_rate_weight = 0.0
         # 偏置的学习率
-        self.learning_rate_bias = 0
+        self.learning_rate_bias = 0.0
         
         if self.type is "input":
             # array，输入图像（每个通道）的尺寸
@@ -587,7 +632,10 @@ class cnn_layer():
         
         Parameters
         ----------
-        inputs: 2-d或3-d array，输入图像（只有当前神经元为输入层神经元时才有效）
+        inputs: 3-d array，一个batch的输入图像，
+                每个通道的尺寸为inputs.shape[0] * inputs.shape[1]，
+                inputs.shape[2]为当前batch中图像的个数 * 每幅图像的通道数
+                （只有当前神经元为输入层神经元时才有效）
         """
         
         if self.type is "input":
@@ -613,20 +661,22 @@ class cnn_layer():
         
         Parameters
         ----------
-        inputs: 2-d或3-d array，输入图像
+        inputs: 3-d array，一个batch的输入图像，
+                每个通道的尺寸为inputs.shape[0] * inputs.shape[1]，
+                inputs.shape[2]为当前batch中图像的个数 * 每幅图像的通道数
         """
         
         self.output = []
-        # 输入图像为单通道，此时inputs为2-d array
+        # 输入图像为单通道，此时inputs[:, :, i]为每幅图像
         if self.n_nodes == 1:
             self.nodes[0].feed_forward(inputs)
             
             self.output.append(self.nodes[0].output)
             
-        # 输入图像为多通道，此时inputs为3-d array
+        # 输入图像为多通道，此时inputs[:, :, i: i + 3]为每幅图像
         elif self.n_nodes > 1:
             for i in range(self.n_nodes):
-                self.nodes[i].feed_forward(inputs[:, :, i])
+                self.nodes[i].feed_forward(inputs[:, :, i: : self.n_nodes])
                 
                 self.output.append(self.nodes[i].output)
                 
@@ -639,22 +689,29 @@ class cnn_layer():
         """
         
         if self.type_output is "softmax":
-            self.output = []
-            combinations = np.empty(self.n_nodes)
-            for i in range(self.n_nodes):
+            # 输出层第一个神经元前向传播
+            self.nodes[0].feed_forward()
+            
+            # size_batch * self.n_nodes array
+            combinations = np.empty([self.nodes[0].combination.shape[-1], 
+                                     self.n_nodes])
+            combinations[:, 0] = self.nodes[0].combination.reshape(-1)
+            
+            # 输出层其它神经元前向传播
+            for i in range(1, self.n_nodes):
                 self.nodes[i].feed_forward()
-                
-                # 输出层神经元的combinations为标量
-                combinations[i] = self.nodes[i].combination_output
+                combinations[:, i] = self.nodes[i].combination.reshape(-1)
                 
             # $e^{w_j^T x}, \forall j$
             exp_combinations = np.exp(combinations)
             # $\sum_{j = 1}^n e^{w_j^T x}$
-            sum_exp = np.sum(exp_combinations)
+            sum_exp = np.sum(exp_combinations, axis=1)
+            
+            self.output = []
             for i in range(self.n_nodes):
-                # 输出层神经元的output为标量
+                # 输出层神经元的output为size_batch array
                 # $\frac{e^{w_i^T x}}{\sum_{j = 1}^n e^{w_j^T x}}$
-                self.nodes[i].output = exp_combinations[i] / sum_exp
+                self.nodes[i].output = exp_combinations[:, i] / sum_exp
                 
                 self.output.append(self.nodes[i].output)
             
@@ -689,7 +746,7 @@ class cnn_layer():
     def _back_propagate_convoluting(self):
         """
         卷积层反向传播。
-        认为卷积层的下一层为池化层或全连接层，卷积层的上一层为池化层或输入层。
+        认为卷积层的下一层为池化层、全连接层或输出层，卷积层的上一层为池化层或输入层。
         """
         
         if self.next_layer.type is "pooling":
@@ -697,6 +754,9 @@ class cnn_layer():
             
         elif self.next_layer.type is "full_connecting":
             self._bp_full_connecting_to_convoluting()
+            
+        elif self.next_layer.type is "output":
+            self._bp_output_to_convoluting()
         
         return None
     
@@ -720,33 +780,47 @@ class cnn_layer():
                 # 池化层中一个神经元只有一个权值
                 # TODO: 下一层池化类型为"max"时
                 delta_padded = node_next_layer.weights[0] * \
-                        cnn_opr.upsample_pool(node_next_layer.delta, 
+                        cnn_opr.upsample_pool(node_next_layer.delta[:, :, 0], 
                                 node_next_layer.type_pooling, 
                                 node_next_layer.size_pool_kernel, 
                                 node_next_layer.stride_pool_kernel)
-                        
-                # 令delta与output尺寸相同
-                delta = np.zeros(self.nodes[i].output.shape)
+                
                 size_delta_padded = delta_padded.shape
-                delta[ : size_delta_padded[0], : size_delta_padded[1]] += \
+                delta = np.zeros(self.nodes[i].output.shape)
+                delta[ : size_delta_padded[0], : size_delta_padded[1], 0] = \
                         delta_padded
-                        
+                
+                for j in range(1, delta.shape[-1]):
+                    delta[ : size_delta_padded[0], : size_delta_padded[1], j] = \
+                        node_next_layer.weights[0] * \
+                        cnn_opr.upsample_pool(node_next_layer.delta[:, :, j], 
+                                node_next_layer.type_pooling, 
+                                node_next_layer.size_pool_kernel, 
+                                node_next_layer.stride_pool_kernel)
+                
                 self.nodes[i].delta = delta * \
                         (self.nodes[i].output - self.nodes[i].output**2)
-                        
+                
                 # 更新当前神经元的权值，即当前神经元的各卷积核
                 for j in range(self.nodes[i].n_conv_kernels):
                     # 卷积层的上一层可能为池化层或输入层
+                    delta_k = 0.0
+                    for iter_in_batch in range(delta.shape[-1]):
+                        delta_k += cnn_opr.inv_conv_2d( \
+                                self.nodes[i].nodes_prior_layer[j].output[ \
+                                :, :, iter_in_batch], 
+                                self.size_conv_kernel, 
+                                self.stride_conv_kernel, 
+                                self.padding_conv, 
+                                self.nodes[i].delta[:, :, iter_in_batch])
+                    delta_k /= delta.shape[-1]
+                    
                     self.nodes[i].conv_kernels[j] -= \
-                            self.learning_rate_weight * \
-                            cnn_opr.inv_conv_2d( \
-                                    self.nodes[i].nodes_prior_layer[j].output, 
-                                    self.size_conv_kernel, 
-                                    self.stride_conv_kernel, 
-                                    self.padding_conv, self.nodes[i].delta)
+                            self.learning_rate_weight * delta_k
+                    
                 # 更新当前神经元的偏置
                 self.nodes[i].bias -= self.learning_rate_bias * \
-                        np.sum(self.nodes[i].delta)
+                        np.sum(self.nodes[i].delta) / delta.shape[-1]
                         
         elif self.type_activation is "tanh":
             pass
@@ -769,30 +843,38 @@ class cnn_layer():
         
         elif self.type_activation is "sigmoid":
             for i in range(self.n_nodes):
-                delta = 0
+                delta = 0.0
                 for j in range(len(self.nodes[i].nodes_next_layer)):
-                    # 全连接层神经元的delta为标量
+                    # 全连接层神经元的delta为size_batch array
                     delta += self.nodes[i].nodes_next_layer[j].weights[i] * \
                             self.nodes[i].nodes_next_layer[j].delta
                             
-                # delta变成1 * 1 array
-                delta *= (self.nodes[i].output - self.nodes[i].output**2)
+                delta *= (self.nodes[i].output[0, 0, :] - 
+                          self.nodes[i].output[0, 0, :]**2)
+                delta = delta.reshape(1, 1, -1)
                 self.nodes[i].delta = delta
                 
                 # 更新当前神经元的权值，即当前神经元的各卷积核
                 for j in range(self.nodes[i].n_conv_kernels):
                     # 卷积层的上一层可能为池化层或输入层
+                    delta_k = 0.0
+                    for iter_in_batch in range(delta.shape[-1]):
+                        delta_k += cnn_opr.inv_conv_2d( \
+                                self.nodes[i].nodes_prior_layer[j].output[ \
+                                :, :, iter_in_batch], 
+                                self.size_conv_kernel, 
+                                self.stride_conv_kernel, 
+                                self.padding_conv, 
+                                self.nodes[i].delta[:, :, iter_in_batch])
+                    delta_k /= delta.shape[-1]
+                    
                     self.nodes[i].conv_kernels[j] -= \
-                            self.learning_rate_weight * \
-                            cnn_opr.inv_conv_2d( \
-                                    self.nodes[i].nodes_prior_layer[j].output, 
-                                    self.size_conv_kernel, 
-                                    self.stride_conv_kernel, 
-                                    self.padding_conv, delta)
+                            self.learning_rate_weight * delta_k
+                    
                 # 更新当前神经元的偏置
-                # self.nodes[i].delta实际上为1 * 1 array
+                # self.nodes[i].delta实际上为1 * 1 * size_batch array
                 self.nodes[i].bias -= self.learning_rate_bias * \
-                np.sum(self.nodes[i].delta)
+                        np.sum(self.nodes[i].delta) / delta.shape[-1]
                 
         elif self.type_activation is "tanh":
             pass
@@ -800,10 +882,38 @@ class cnn_layer():
         return None
     
     
+    def _bp_output_to_convoluting(self):
+        """
+        当前层为卷积层，下一层为输出层时的反向传播。
+        此时卷积层的每个输出特征图均为1 * 1 array。
+        """
+        
+        self._bp_full_connecting_to_convoluting()
+        
+        return None
+    
+    
     def _back_propagate_pooling(self):
         """
         池化层反向传播。
-        认为池化层的上一层及下一层均为卷积层。
+        认为池化层的上一层为卷积层，池化层的下一层为卷积层、全连接层或输出层。
+        """
+        
+        if self.next_layer.type is "convoluting":
+            self._bp_convoluting_to_pooling()
+            
+        elif self.next_layer.type is "full_connecting":
+            self._bp_full_connecting_to_pooling()
+            
+        elif self.next_layer.type is "output":
+            self._bp_output_to_pooling()
+            
+        return None
+    
+    
+    def _bp_convoluting_to_pooling(self):
+        """
+        当前层为池化层，下一层为卷积层时的反向传播。
         """
         
         # TODO: 
@@ -814,7 +924,50 @@ class cnn_layer():
             pass
         
         elif self.type_activation is "sigmoid":
-            for i in range(self.next_layer.connecting_matrix.shape[1]):
+            index_kernel = -1
+            for j in range(self.next_layer.connecting_matrix.shape[0]):
+                if self.next_layer.connecting_matrix[j, 0] == 1:
+                    index_kernel += 1
+                    
+                    if index_kernel == 0:
+                        delta_padded = cnn_opr.upsample_conv_2d( \
+                            self.next_layer.nodes[0].delta[:, :, 0], 
+                            self.next_layer.nodes[0].conv_kernels[index_kernel], 
+                            self.next_layer.nodes[0].size_conv_kernel, 
+                            self.next_layer.nodes[0].stride_conv_kernel)
+                        
+                        for n in range(self.n_nodes):
+                            self.nodes[n].delta = np.zeros([ \
+                                delta_padded.shape[0], 
+                                delta_padded.shape[1], 
+                                self.next_layer.nodes[0].delta.shape[-1]])
+                            
+                        self.nodes[j].delta[:, :, 0] = delta_padded
+                        
+                        for iter_in_batch in range(1, 
+                                self.next_layer.nodes[0].delta.shape[-1]):
+                            self.nodes[j].delta[:, :, iter_in_batch] += \
+                                cnn_opr.upsample_conv_2d( \
+                                self.next_layer.nodes[0].delta[ \
+                                        :, :, iter_in_batch], 
+                                self.next_layer.nodes[0].conv_kernels[ \
+                                        index_kernel], 
+                                self.next_layer.nodes[0].size_conv_kernel, 
+                                self.next_layer.nodes[0].stride_conv_kernel)
+                                
+                    elif index_kernel > 0:
+                        for iter_in_batch in range( \
+                                self.next_layer.nodes[0].delta.shape[-1]):
+                            self.nodes[j].delta[:, :, iter_in_batch] += \
+                                cnn_opr.upsample_conv_2d( \
+                                self.next_layer.nodes[0].delta[ \
+                                        :, :, iter_in_batch], 
+                                self.next_layer.nodes[0].conv_kernels[ \
+                                        index_kernel], 
+                                self.next_layer.nodes[0].size_conv_kernel, 
+                                self.next_layer.nodes[0].stride_conv_kernel)
+                                
+            for i in range(1, self.next_layer.connecting_matrix.shape[1]):
                 # 卷积层中每个神经元可能与上一层中多个神经元连接，
                 # 即卷积层中的神经元可能有多个卷积核
                 
@@ -826,35 +979,89 @@ class cnn_layer():
                     if self.next_layer.connecting_matrix[j, i] == 1:
                         index_kernel += 1
                         
-                        self.nodes[j].delta += cnn_opr.upsample_conv_2d( \
-                            self.next_layer.nodes[i].delta, 
-                            self.next_layer.nodes[i].conv_kernels[index_kernel], 
-                            self.next_layer.nodes[i].size_conv_kernel, 
-                            self.next_layer.nodes[i].stride_conv_kernel)
-                
+                        for iter_in_batch in range( \
+                                self.next_layer.nodes[i].delta.shape[-1]):
+                            self.nodes[j].delta[:, :, iter_in_batch] += \
+                                cnn_opr.upsample_conv_2d( \
+                                self.next_layer.nodes[i].delta[ \
+                                        :, :, iter_in_batch], 
+                                self.next_layer.nodes[i].conv_kernels[ \
+                                        index_kernel], 
+                                self.next_layer.nodes[i].size_conv_kernel, 
+                                self.next_layer.nodes[i].stride_conv_kernel)
+                                
             for i in range(self.n_nodes):
                 # 令delta与output尺寸相同
                 delta = np.zeros(self.nodes[i].output.shape)
                 size_delta_padded = self.nodes[i].delta.shape
-                delta[ : size_delta_padded[0], : size_delta_padded[1]] += \
+                delta[ : size_delta_padded[0], : size_delta_padded[1], :] += \
                         self.nodes[i].delta
                 
                 self.nodes[i].delta = delta * \
                         (self.nodes[i].output - self.nodes[i].output**2)
-                        
+                
                 # 更新当前神经元的权值
                 # $\frac{\partial loss}{\partial w} = \sum{\delta \dot z}$
                 # 池化层中每个神经元只有一个权值
                 self.nodes[i].weights[0] -= self.learning_rate_weight * \
-                        np.sum(self.nodes[i].delta * \
-                               self.nodes[i].combination_pool)
+                    np.sum(self.nodes[i].delta * self.nodes[i].combination) / \
+                    self.nodes[i].delta.shape[-1]
                 # 更新当前神经元的偏置
                 # $\frac{\partial loss}{\partial b} = \sum{\delta}$
                 self.nodes[i].bias -= self.learning_rate_bias * \
-                        np.sum(self.nodes[i].delta)
-        
+                    np.sum(self.nodes[i].delta) / self.nodes[i].delta.shape[-1]
+                        
         elif self.type_activation is "tanh":
             pass
+        
+        return None
+    
+    
+    def _bp_full_connecting_to_pooling(self):
+        """
+        当前层为池化层，下一层为全连接层时的反向传播。
+        此时池化层的每个输出特征图为1 * 1 array。
+        """
+        
+        # TODO: 
+        if self.type_activation is None:
+            pass
+        
+        elif self.type_activation is "relu":
+            pass
+        
+        elif self.type_activation is "sigmoid":
+            for i in range(self.n_nodes):
+                delta = 0.0
+                for j in range(len(self.nodes[i].nodes_next_layer)):
+                    delta += self.nodes[i].nodes_next_layer[j].weights[i] * \
+                            self.nodes[i].nodes_next_layer[j].delta
+                            
+                delta *= (self.nodes[i].output[0, 0, :] - \
+                          self.nodes[i].output[0, 0, :]**2)
+                self.nodes[i].delta = delta.reshape(1, 1, -1)
+                
+                # 更新当前神经元的权值
+                self.nodes[i].weights[0] -= self.learning_rate_weight * \
+                    np.sum(self.nodes[i].delta * self.nodes[i].combination) / \
+                    self.nodes[i].shape[-1]
+                # 更新当前神经元的偏置
+                self.nodes[i].bias -= self.learning_rate_bias * \
+                    np.sum(self.nodes[i].delta) / self.nodes[i].delta.shape[-1]
+                    
+        elif self.type_activation is "tanh":
+            pass
+        
+        return None
+    
+    
+    def _bp_output_to_pooling(self):
+        """
+        当前层为池化层，下一层为输出层时的反向传播。
+        此时池化层的每个输出特征图为1 * 1 array。
+        """
+        
+        self._bp_full_connecting_to_pooling()
         
         return None
     
@@ -874,26 +1081,27 @@ class cnn_layer():
         elif self.type_activation is "sigmoid":
             for i in range(self.n_nodes):
                 # 计算当前神经元的灵敏度
-                delta = 0
+                delta = 0.0
                 for j in range(len(self.nodes[i].nodes_next_layer)):
                     # （认为全连接层的下一层为全连接层或输出层）
                     delta += self.nodes[i].nodes_next_layer[j].weights[i] * \
                             self.nodes[i].nodes_next_layer[j].delta
                 # 对于sigmoid，$f'(z) = f(z) (1 - f(z))$
-                delta *= (self.nodes[i].output[0, 0] - \
-                          self.nodes[i].output[0, 0]**2)
+                delta *= (self.nodes[i].output[0, 0, :] - \
+                          self.nodes[i].output[0, 0, :]**2)
                 self.nodes[i].delta = delta
                 
                 # 更新当前神经元的权值
                 for j in range(len(self.nodes[i].nodes_prior_layer)):
                     # 全连接层的上一层（卷积层）的输出为一个向量，
-                    # 即上一层中每个神经元的output为1 * 1 array
-                    self.nodes[i].weights[j] -= self.learning_rate_weight * \
-                            self.nodes[i].delta * \
-                            self.nodes[i].nodes_prior_layer[j].output[0, 0]
+                    # 即上一层中每个神经元的output为1 * 1 * size_batch array
+                    self.nodes[i].weights[j] -= \
+                            self.learning_rate_weight * \
+                            np.mean(self.nodes[i].delta * \
+                            self.nodes[i].nodes_prior_layer[j].output[0, 0, :])
                 # 更新当前神经元的偏置
                 self.nodes[i].bias -= \
-                        self.learning_rate_bias * self.nodes[i].delta
+                        self.learning_rate_bias * np.mean(self.nodes[i].delta)
                         
         elif self.type_activation is "tanh":
             pass
@@ -911,7 +1119,8 @@ class cnn_layer():
         """
         
         if self.type_output is "softmax":
-            delta_y = np.array(self.output) - y
+            # self.n_nodes * size_batch array
+            delta_y = np.array(self.output).reshape(self.n_nodes, -1) - y
             
             # 计算输出层各神经元的灵敏度，并更新权值和偏置
             for i in range(self.n_nodes):
@@ -921,20 +1130,21 @@ class cnn_layer():
                 # 对于softmax，$f'(z) = f(z) (1 - f(z))$
                 # 输出层各神经元的output实际上为$f(z)$
                 self.nodes[i].delta = \
-                        delta_y[i] * (self.output[i] - self.output[i]**2)
+                        delta_y[i, :] * (self.output[i] - self.output[i]**2)
                 
                 # 更新输出层当前神经元的权值
                 # $w' = w - \eta \frac{\partial loss}{\partial w}$
                 # $\frac{\partial loss}{\partial w} = \delta z^{(L - 1)}$
                 for j in range(len(self.nodes[i].nodes_prior_layer)):
                     # 输出层的上一层为全连接层
-                    # 全连接层的output为1 * 1 array
+                    # 全连接层的output为1 * 1 * size_batch array
                     self.nodes[i].weights[j] -= \
-                            self.learning_rate_weight * self.nodes[i].delta * \
-                            self.nodes[i].nodes_prior_layer[j].output[0, 0]
+                            self.learning_rate_weight * \
+                            np.mean(self.nodes[i].delta * \
+                            self.nodes[i].nodes_prior_layer[j].output[0, 0, :])
                 # 更新输出层当前神经元的偏置
                 self.nodes[i].bias -= \
-                        self.learning_rate_bias * self.nodes[i].delta
+                        self.learning_rate_bias * np.mean(self.nodes[i].delta)
             
         elif self.type_output is "rbf":
             # TODO: 
@@ -968,7 +1178,7 @@ class cnn_node():
         # 当前神经元为全连接层或输出层神经元时，灵敏度为标量，
         # 当前神经元为卷积层或池化层神经元时，灵敏度为2-d array，尺寸与output相同
         # （实际上卷积层和池化层输出特征图中的每一个点为一个“神经元”）
-        self.delta = 0
+        self.delta = 0.0
         
         if self.type is "input":
             # array，输入图像（每个通道）的尺寸
@@ -986,9 +1196,9 @@ class cnn_node():
             # 边缘补零的宽度
             self.padding_conv = 0
             # 偏置
-            self.bias = 0
+            self.bias = 0.0
             # 2-d array，卷积后（未经过激活函数）的特征图
-            self.combination_conv = None
+            self.combination = None
             # 激活函数类型，{"relu", "sigmoid", "tanh", None}
             self.type_activation = None
             
@@ -1002,21 +1212,21 @@ class cnn_node():
             # 边缘补零的宽度
             self.padding_pool = 0
             # array，权值
-            self.weights = np.array([0])
+            self.weights = np.array([0.0])
             # 偏置
-            self.bias = 0
+            self.bias = 0.0
             # 2-d array，池化后（未经过激活函数）的特征图
-            self.combination_pool = None
+            self.combination = None
             # 激活函数类型，{"relu", "sigmoid", "tanh", None}
             self.type_activation = None
             
         elif self.type is "full_connecting":
             # array，权值
-            self.weights = np.array([])
+            self.weights = np.array([], dtype="float64")
             # 偏置
-            self.bias = 0
+            self.bias = 0.0
             # array，$(w^{(l)})^T x^{(l - 1)} + b^{(l)}$
-            self.combination_fc = None
+            self.combination = None
             # 激活函数类型，{"relu", "sigmoid", "tanh", None}
             self.type_activation = None
             
@@ -1024,11 +1234,11 @@ class cnn_node():
             # 输出层类型，{"softmax", "rbf"}
             self.type_output = "softmax"
             # array，权值
-            self.weights = np.array([])
+            self.weights = np.array([], dtype="float64")
             # 偏置
-            self.bias = 0
+            self.bias = 0.0
             # $(w^{(L)})^T x^{(L - 1)} + b^{(L)}$
-            self.combination_output = 0
+            self.combination = 0.0
             
             
     def config(self, args):
@@ -1145,7 +1355,7 @@ class cnn_node():
         
         # 初始化权值
         if self.type_pooling is "max":
-            self.weights[0] = 1
+            self.weights[0] = 1.0
         elif self.type_pooling is "average":
             self.weights[0] = 1 / np.prod(self.size_pool_kernel)
         
@@ -1218,7 +1428,9 @@ class cnn_node():
         
         Parameters
         ----------
-        inputs: 2-d array，输入图像（或其中一个通道），尺寸为self.size_input
+        inputs: 3-d array，一个batch的输入图像（或其中一个通道），
+                尺寸为inputs.shape[0] * inputs.shape[1]（即self.size_input），
+                inputs.shape[2]为当前batch中图像的个数
         """
         
         self.output = inputs
@@ -1231,16 +1443,42 @@ class cnn_node():
         卷积层神经元前向传播。
         """
         
-        combination = 0
+        # 每一批中训练样本的个数
+        size_batch = self.nodes_prior_layer[0].output.shape[-1]
+        
+        # 当前batch中第一个样本前向传播
+        combination = 0.0
         for i in range(self.n_conv_kernels):
             combination += cnn_opr.convolute_2d( \
-                    self.nodes_prior_layer[i].output, self.conv_kernels[i], 
-                    self.size_conv_kernel, self.stride_conv_kernel, 
-                    self.padding_conv)
+                    self.nodes_prior_layer[i].output[:, :, 0], 
+                    self.conv_kernels[i], self.size_conv_kernel, 
+                    self.stride_conv_kernel, self.padding_conv)
         combination += self.bias
         
-        self.combination_conv = combination
-        self.output = cnn_opr.activate(combination, self.type_activation)
+        # 根据当前batch中第一个样本确定self.combination、self.output的大小
+        size_combination = combination.shape
+        self.combination = np.empty([size_combination[0], size_combination[1], 
+                                     size_batch])
+        self.output = np.empty([size_combination[0], size_combination[1], 
+                                size_batch])
+        
+        self.combination[:, :, 0] = combination
+        self.output[:, :, 0] = \
+                cnn_opr.activate(combination, self.type_activation)
+        
+        # 当前batch中其它样本前向传播
+        for iter_in_batch in range(1, size_batch):
+            combination = 0.0
+            for i in range(self.n_conv_kernels):
+                combination += cnn_opr.convolute_2d( \
+                        self.nodes_prior_layer[i].output[:, :, iter_in_batch], 
+                        self.conv_kernels[i], self.size_conv_kernel, 
+                        self.stride_conv_kernel, self.padding_conv)
+            combination += self.bias
+            
+            self.combination[:, :, iter_in_batch] = combination
+            self.output[:, :, iter_in_batch] = \
+                    cnn_opr.activate(combination, self.type_activation)
         
         return None
     
@@ -1250,17 +1488,38 @@ class cnn_node():
         池化层神经元前向传播。
         """
         
-        combination = cnn_opr.pool(self.nodes_prior_layer.output, 
+        size_batch = self.nodes_prior_layer.output.shape[-1]
+        
+        combination = cnn_opr.pool(self.nodes_prior_layer.output[:, :, 0], 
                                    self.type_pooling, self.size_pool_kernel, 
                                    self.stride_pool_kernel, self.padding_pool)
         combination *= self.weights
         combination += self.bias
         
-        self.combination_pool = combination
-        self.output = cnn_opr.activate(combination, self.type_activation)
+        size_combination = combination.shape
+        self.combination = np.empty([size_combination[0], size_combination[1], 
+                                     size_batch])
+        self.output = np.empty([size_combination[0], size_combination[1], 
+                                size_batch])
+        
+        self.combination[:, :, 0] = combination
+        self.output[:, :, 0] = \
+                cnn_opr.activate(combination, self.type_activation)
+                
+        for iter_in_batch in range(1, size_batch):
+            combination = cnn_opr.pool( \
+                    self.nodes_prior_layer.output[:, :, iter_in_batch], 
+                    self.type_pooling, self.size_pool_kernel, 
+                    self.stride_pool_kernel, self.padding_pool)
+            combination *= self.weights
+            combination += self.bias
+            
+            self.combination[:, :, iter_in_batch] = combination
+            self.output[:, :, iter_in_batch] = \
+                    cnn_opr.activate(combination, self.type_activation)
         
         # 灵敏度map置零
-        self.delta = 0
+        self.delta = 0.0
         
         return None
     
@@ -1270,18 +1529,25 @@ class cnn_node():
         全连接层神经元前向传播。
         """
         
-        combination = 0
-        for i in range(len(self.nodes_prior_layer)):
-            # 全连接层的上一层输出为一维向量，
-            # 即上一层每个神经元输出的特征图尺寸为1 * 1
-            combination += self.weights[i] * \
-                    self.nodes_prior_layer[i].output[0, 0]
-        combination += self.bias
+        size_batch = self.nodes_prior_layer[0].output.shape[2]
         
-        # 转换为1 * 1 array
-        self.combination_fc = np.array([combination]).reshape(-1, 1)
-        self.output = cnn_opr.activate(self.combination_fc, 
-                                       self.type_activation)
+        self.combination = np.empty([1, 1, size_batch])
+        self.output = np.empty([1, 1, size_batch])
+        
+        for iter_in_batch in range(size_batch):
+            combination = 0.0
+            for i in range(len(self.nodes_prior_layer)):
+                # 全连接层的上一层输出为一维向量，
+                # 即上一层每个神经元输出的特征图尺寸为1 * 1
+                combination += self.weights[i] * \
+                        self.nodes_prior_layer[i].output[0, 0, iter_in_batch]
+            combination += self.bias
+        
+            # combination为标量
+            self.combination[0, 0, iter_in_batch] = combination
+            self.output[:, :, iter_in_batch] = \
+                    cnn_opr.activate(self.combination[:, :, iter_in_batch], 
+                                     self.type_activation)
         
         return None
     
@@ -1292,16 +1558,23 @@ class cnn_node():
         """
         
         if self.type_output is "softmax":
-            # $softmax(w_i) = \frac{e^{w_i^T x}}{\sum_{j = 1}^n e^{w_j^T x}}$
-            # 此处只计算$w_i^T x$，其余运算在cnn_layer.feed_forward()中进行
-            combination = 0
-            for i in range(len(self.nodes_prior_layer)):
-                combination += self.weights[i] * \
-                        self.nodes_prior_layer[i].output
-            combination += self.bias
+            size_batch = self.nodes_prior_layer[0].output.shape[2]
             
-            # 输出层combination为标量
-            self.combination_output = combination
+            self.combination = np.empty([1, 1, size_batch])
+            self.output = np.empty([1, 1, size_batch])
+            
+            for iter_in_batch in range(size_batch):
+                # $softmax(w_i) = 
+                #     \frac{e^{w_i^T x}}{\sum_{j = 1}^n e^{w_j^T x}}$
+                # 此处只计算$w_i^T x$，其余运算在cnn_layer.feed_forward()中进行
+                combination = 0.0
+                for i in range(len(self.nodes_prior_layer)):
+                    combination += self.weights[i] * \
+                        self.nodes_prior_layer[i].output[0, 0, iter_in_batch]
+                combination += self.bias
+                
+                # 输出层combination为标量
+                self.combination[0, 0, iter_in_batch] = combination
             
         elif self.type_output is "rbf":
             # TODO: 
@@ -1396,17 +1669,10 @@ def test():
     LeNet_5 = cnn()
     LeNet_5.config(args)
     
-    x = np.ones([32, 32])
-    y = 0
-    X = [x]
-    Y = [y]
-    LeNet_5.fit(X, Y)
-    y_predict = LeNet_5.predict(x)
-    
     return LeNet_5
 
 
 if __name__ == "__main__":
-    LeNet_5 = test()
+    test()
     
     
